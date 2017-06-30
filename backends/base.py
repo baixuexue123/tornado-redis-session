@@ -4,20 +4,10 @@ import time
 import random
 import hashlib
 import logging
+import json
+import pickle
 import string
 from datetime import datetime, timedelta
-
-from django.contrib.sessions.exceptions import SuspiciousSession
-from django.core.exceptions import SuspiciousOperation
-from django.utils import timezone
-from django.utils.encoding import force_bytes, force_text
-
-# session_key should not be case sensitive because some backends can store it
-# on case insensitive file systems.
-VALID_KEY_CHARS = string.ascii_lowercase + string.digits
-
-SECRET_KEY = 'lksdflkjsldkfjlskdjflaksdjflkjk123lsdf'
-
 
 try:
     random = random.SystemRandom()
@@ -29,8 +19,33 @@ except NotImplementedError:
     using_sysrandom = False
 
 
+# session_key should not be case sensitive because some backends can store it
+# on case insensitive file systems.
+VALID_KEY_CHARS = string.ascii_lowercase + string.digits
+
+SECRET_KEY = 'lksdflkjsldkfjlskdjflaksdjflkjk123lsdf'
+
+SESSION_COOKIE_AGE = 8 * 60 * 60
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
+
+
+class SuspiciousOperation(Exception):
+    """The user did something suspicious"""
+    pass
+
+
+class InvalidSessionKey(SuspiciousOperation):
+    """Invalid characters in session key"""
+    pass
+
+
+class SuspiciousSession(SuspiciousOperation):
+    """The session may be tampered with"""
+    pass
+
+
 def constant_time_compare(val1, val2):
-    return hmac.compare_digest(force_bytes(val1), force_bytes(val2))
+    return hmac.compare_digest(bytes(val1), bytes(val2))
 
 
 def get_random_string(length=12,
@@ -63,8 +78,8 @@ def salted_hmac(key_salt, value, secret=None):
     if secret is None:
         secret = SECRET_KEY
 
-    key_salt = force_bytes(key_salt)
-    secret = force_bytes(secret)
+    key_salt = bytes(key_salt)
+    secret = bytes(secret)
 
     # We need to generate a derived key from our base key.  We can do this by
     # passing the key_salt and our base key through a pseudo-random function and
@@ -75,7 +90,7 @@ def salted_hmac(key_salt, value, secret=None):
     # line is redundant and could be replaced by key = key_salt + secret, since
     # the hmac module does the same thing for keys longer than the block size.
     # However, we need to ensure that we *always* do this.
-    return hmac.new(key, msg=force_bytes(value), digestmod=hashlib.sha1)
+    return hmac.new(key, msg=bytes(value), digestmod=hashlib.sha1)
 
 
 class CreateError(Exception):
@@ -93,12 +108,34 @@ class UpdateError(Exception):
     pass
 
 
+class JSONSerializer(object):
+    """
+    Simple wrapper around json to be used in signing.dumps and
+    signing.loads.
+    """
+    def dumps(self, obj):
+        return json.dumps(obj, separators=(',', ':')).encode('latin-1')
+
+    def loads(self, data):
+        return json.loads(data.decode('latin-1'))
+
+
+class PickleSerializer(object):
+    """
+    Simple wrapper around pickle to be used in signing.dumps and
+    signing.loads.
+    """
+    def dumps(self, obj):
+        return pickle.dumps(obj, pickle.HIGHEST_PROTOCOL)
+
+    def loads(self, data):
+        return pickle.loads(data)
+
+
 class SessionBase(object):
     """
     Base class for all Session classes.
     """
-    TEST_COOKIE_NAME = 'testcookie'
-    TEST_COOKIE_VALUE = 'worked'
 
     __not_given = object()
 
@@ -106,7 +143,7 @@ class SessionBase(object):
         self._session_key = session_key
         self.accessed = False
         self.modified = False
-        self.serializer = import_string(settings.SESSION_SERIALIZER)
+        self.serializer = PickleSerializer
 
     def __contains__(self, key):
         return key in self._session
@@ -138,15 +175,6 @@ class SessionBase(object):
             self._session[key] = value
             return value
 
-    def set_test_cookie(self):
-        self[self.TEST_COOKIE_NAME] = self.TEST_COOKIE_VALUE
-
-    def test_cookie_worked(self):
-        return self.get(self.TEST_COOKIE_NAME) == self.TEST_COOKIE_VALUE
-
-    def delete_test_cookie(self):
-        del self[self.TEST_COOKIE_NAME]
-
     def _hash(self, value):
         key_salt = "django.contrib.sessions" + self.__class__.__name__
         return salted_hmac(key_salt, value).hexdigest()
@@ -158,7 +186,7 @@ class SessionBase(object):
         return base64.b64encode(hash.encode() + b":" + serialized).decode('ascii')
 
     def decode(self, session_data):
-        encoded_data = base64.b64decode(force_bytes(session_data))
+        encoded_data = base64.b64decode(bytes(session_data))
         try:
             # could produce ValueError if there is no ':'
             hash, serialized = encoded_data.split(b':', 1)
@@ -172,7 +200,7 @@ class SessionBase(object):
             # these happen, just return an empty dictionary (an empty session).
             if isinstance(e, SuspiciousOperation):
                 logger = logging.getLogger('django.security.%s' % e.__class__.__name__)
-                logger.warning(force_text(e))
+                logger.warning(str(e))
             return {}
 
     def update(self, dict_):
@@ -276,7 +304,7 @@ class SessionBase(object):
         try:
             modification = kwargs['modification']
         except KeyError:
-            modification = timezone.now()
+            modification = datetime.now()
         # Make the difference between "expiry=None passed in kwargs" and
         # "expiry not passed in kwargs", in order to guarantee not to trigger
         # self.load() when expiry is provided.
@@ -286,7 +314,7 @@ class SessionBase(object):
             expiry = self.get('_session_expiry')
 
         if not expiry:   # Checks both None and 0 cases
-            return settings.SESSION_COOKIE_AGE
+            return SESSION_COOKIE_AGE
         if not isinstance(expiry, datetime):
             return expiry
         delta = expiry - modification
@@ -301,7 +329,7 @@ class SessionBase(object):
         try:
             modification = kwargs['modification']
         except KeyError:
-            modification = timezone.now()
+            modification = datetime.now()
         # Same comment as in get_expiry_age
         try:
             expiry = kwargs['expiry']
@@ -311,7 +339,7 @@ class SessionBase(object):
         if isinstance(expiry, datetime):
             return expiry
         if not expiry:   # Checks both None and 0 cases
-            expiry = settings.SESSION_COOKIE_AGE
+            expiry = SESSION_COOKIE_AGE
         return modification + timedelta(seconds=expiry)
 
     def set_expiry(self, value):
@@ -337,7 +365,7 @@ class SessionBase(object):
                 pass
             return
         if isinstance(value, timedelta):
-            value = timezone.now() + value
+            value = datetime.now() + value
         self['_session_expiry'] = value
 
     def get_expire_at_browser_close(self):
@@ -348,7 +376,7 @@ class SessionBase(object):
         date/age, if there is one.
         """
         if self.get('_session_expiry') is None:
-            return settings.SESSION_EXPIRE_AT_BROWSER_CLOSE
+            return SESSION_EXPIRE_AT_BROWSER_CLOSE
         return self.get('_session_expiry') == 0
 
     def flush(self):

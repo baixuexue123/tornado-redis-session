@@ -1,20 +1,17 @@
-from django.conf import settings
-from django.contrib.sessions.backends.base import (
+from .base import (
     CreateError, SessionBase, UpdateError,
 )
 from django.core.cache import caches
-
-KEY_PREFIX = "django.contrib.sessions.cache"
 
 
 class SessionStore(SessionBase):
     """
     A cache-based session store.
     """
-    cache_key_prefix = KEY_PREFIX
+    cache_key_prefix = 'tornado.sessions.cache'
 
     def __init__(self, session_key=None):
-        self._cache = caches[settings.SESSION_CACHE_ALIAS]
+        self._cache = caches[SESSION_CACHE_ALIAS]
         super(SessionStore, self).__init__(session_key)
 
     @property
