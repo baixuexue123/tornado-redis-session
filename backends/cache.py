@@ -1,7 +1,6 @@
 from .base import (
     CreateError, SessionBase, UpdateError,
 )
-from django.core.cache import caches
 
 
 class SessionStore(SessionBase):
@@ -9,9 +8,10 @@ class SessionStore(SessionBase):
     A cache-based session store.
     """
     cache_key_prefix = 'tornado.sessions.cache'
+    SESSION_CACHE_ALIAS = 'cache'
 
-    def __init__(self, session_key=None):
-        self._cache = caches[SESSION_CACHE_ALIAS]
+    def __init__(self, engine, session_key=None):
+        self._cache = engine
         super(SessionStore, self).__init__(session_key)
 
     @property
@@ -32,7 +32,7 @@ class SessionStore(SessionBase):
 
     def create(self):
         # Because a cache can fail silently (e.g. memcache), we don't know if
-        # we are failing to create a new session because of a key collision or
+        # we are failing to create a new session because of a key collision or_get_or_create_session_key
         # because the cache is missing. So we try for a (large) number of times
         # and then raise an exception. That's the risk you shoulder if using
         # cache backing.

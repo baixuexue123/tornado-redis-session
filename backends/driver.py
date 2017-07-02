@@ -82,6 +82,3 @@ class DriverFactory(object):
                 del storage_settings[storage_category]
 
         return RedisDriver(storage_settings)
-
-    def _create_memcached(self, storage_settings, storage_category):
-        return MemcachedDriver(storage_settings)

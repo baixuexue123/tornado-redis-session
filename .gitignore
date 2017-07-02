@@ -25,10 +25,6 @@ wheels/
 .installed.cfg
 *.egg
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -40,19 +36,6 @@ coverage.xml
 *.cover
 .hypothesis/
 
-# Translations
-*.mo
-*.pot
-
-# Sphinx documentation
-docs/_build/
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
 # dotenv
 .env
 
@@ -60,9 +43,6 @@ celerybeat-schedule
 .venv
 venv/
 ENV/
-
-# mkdocs documentation
-/site
 
 # pycharm
 .idea

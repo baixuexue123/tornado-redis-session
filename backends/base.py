@@ -19,16 +19,6 @@ except NotImplementedError:
     using_sysrandom = False
 
 
-# session_key should not be case sensitive because some backends can store it
-# on case insensitive file systems.
-VALID_KEY_CHARS = string.ascii_lowercase + string.digits
-
-SECRET_KEY = 'lksdflkjsldkfjlskdjflaksdjflkjk123lsdf'
-
-SESSION_COOKIE_AGE = 8 * 60 * 60
-SESSION_EXPIRE_AT_BROWSER_CLOSE = False
-
-
 class SuspiciousOperation(Exception):
     """The user did something suspicious"""
     pass
@@ -42,55 +32,6 @@ class InvalidSessionKey(SuspiciousOperation):
 class SuspiciousSession(SuspiciousOperation):
     """The session may be tampered with"""
     pass
-
-
-def constant_time_compare(val1, val2):
-    return hmac.compare_digest(bytes(val1), bytes(val2))
-
-
-def get_random_string(length=12,
-                      allowed_chars='abcdefghijklmnopqrstuvwxyz'
-                                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'):
-    """
-    Returns a securely generated random string.
-
-    The default length of 12 with the a-z, A-Z, 0-9 character set returns
-    a 71-bit value. log_2((26+26+10)^12) =~ 71 bits
-    """
-    if not using_sysrandom:
-        # This is ugly, and a hack, but it makes things better than
-        # the alternative of predictability. This re-seeds the PRNG
-        # using a value that is hard for an attacker to predict, every
-        # time a random string is required. This may change the
-        # properties of the chosen random sequence slightly, but this
-        # is better than absolute predictability.
-        random.seed(hashlib.sha256(("%s%s%s" % (random.getstate(), time.time(), SECRET_KEY)).encode('utf-8')).digest())
-    return ''.join(random.choice(allowed_chars) for _ in range(length))
-
-
-def salted_hmac(key_salt, value, secret=None):
-    """
-    Returns the HMAC-SHA1 of 'value', using a key generated from key_salt and a
-    secret (which defaults to settings.SECRET_KEY).
-
-    A different key_salt should be passed in for every application of HMAC.
-    """
-    if secret is None:
-        secret = SECRET_KEY
-
-    key_salt = bytes(key_salt)
-    secret = bytes(secret)
-
-    # We need to generate a derived key from our base key.  We can do this by
-    # passing the key_salt and our base key through a pseudo-random function and
-    # SHA1 works nicely.
-    key = hashlib.sha1(key_salt + secret).digest()
-
-    # If len(key_salt + secret) > sha_constructor().block_size, the above
-    # line is redundant and could be replaced by key = key_salt + secret, since
-    # the hmac module does the same thing for keys longer than the block size.
-    # However, we need to ensure that we *always* do this.
-    return hmac.new(key, msg=bytes(value), digestmod=hashlib.sha1)
 
 
 class CreateError(Exception):
@@ -108,7 +49,11 @@ class UpdateError(Exception):
     pass
 
 
-class JSONSerializer(object):
+def constant_time_compare(val1, val2):
+    return hmac.compare_digest(bytes(val1, encoding='utf-8'), bytes(val2, encoding='utf-8'))
+
+
+class JSONSerializer:
     """
     Simple wrapper around json to be used in signing.dumps and
     signing.loads.
@@ -120,7 +65,7 @@ class JSONSerializer(object):
         return json.loads(data.decode('latin-1'))
 
 
-class PickleSerializer(object):
+class PickleSerializer:
     """
     Simple wrapper around pickle to be used in signing.dumps and
     signing.loads.
@@ -132,10 +77,19 @@ class PickleSerializer(object):
         return pickle.loads(data)
 
 
-class SessionBase(object):
+class SessionBase:
     """
     Base class for all Session classes.
     """
+
+    # session_key should not be case sensitive because some backends can store it
+    # on case insensitive file systems.
+    VALID_KEY_CHARS = string.ascii_lowercase + string.digits
+
+    SECRET_KEY = 'lksdflkjsldkfjlskdjflaksdjflkjk123lsdf'
+
+    SESSION_COOKIE_AGE = 8 * 60 * 60
+    SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
     __not_given = object()
 
@@ -176,8 +130,8 @@ class SessionBase(object):
             return value
 
     def _hash(self, value):
-        key_salt = "django.contrib.sessions" + self.__class__.__name__
-        return salted_hmac(key_salt, value).hexdigest()
+        key_salt = "sessions" + self.__class__.__name__
+        return self._salted_hmac(key_salt, value).hexdigest()
 
     def encode(self, session_dict):
         "Returns the given session dictionary serialized and encoded as a string."
@@ -243,10 +197,53 @@ class SessionBase(object):
         except AttributeError:
             return True
 
+    def _salted_hmac(self, key_salt, value, secret=None):
+        """
+        Returns the HMAC-SHA1 of 'value', using a key generated from key_salt and a
+        secret (which defaults to settings.SECRET_KEY).
+
+        A different key_salt should be passed in for every application of HMAC.
+        """
+        if secret is None:
+            secret = self.SECRET_KEY
+
+        key_salt = bytes(key_salt, encoding='utf-8')
+        secret = bytes(secret, encoding='utf-8')
+
+        # We need to generate a derived key from our base key.  We can do this by
+        # passing the key_salt and our base key through a pseudo-random function and
+        # SHA1 works nicely.
+        key = hashlib.sha1(key_salt + secret).digest()
+
+        # If len(key_salt + secret) > sha_constructor().block_size, the above
+        # line is redundant and could be replaced by key = key_salt + secret, since
+        # the hmac module does the same thing for keys longer than the block size.
+        # However, we need to ensure that we *always* do this.
+        return hmac.new(key, msg=bytes(value, encoding='utf-8'), digestmod=hashlib.sha1)
+
+    def _get_random_string(self, length=12,
+                           allowed_chars='abcdefghijklmnopqrstuvwxyz'
+                                         'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'):
+        """
+        Returns a securely generated random string.
+
+        The default length of 12 with the a-z, A-Z, 0-9 character set returns
+        a 71-bit value. log_2((26+26+10)^12) =~ 71 bits
+        """
+        if not using_sysrandom:
+            # This is ugly, and a hack, but it makes things better than
+            # the alternative of predictability. This re-seeds the PRNG
+            # using a value that is hard for an attacker to predict, every
+            # time a random string is required. This may change the
+            # properties of the chosen random sequence slightly, but this
+            # is better than absolute predictability.
+            random.seed(hashlib.sha256(("%s%s%s" % (random.getstate(), time.time(), self.SECRET_KEY)).encode('utf-8')).digest())
+        return ''.join(random.choice(allowed_chars) for _ in range(length))
+
     def _get_new_session_key(self):
         "Returns session key that isn't being used."
         while True:
-            session_key = get_random_string(32, VALID_KEY_CHARS)
+            session_key = self._get_random_string(32, self.VALID_KEY_CHARS)
             if not self.exists(session_key):
                 break
         return session_key
@@ -314,7 +311,7 @@ class SessionBase(object):
             expiry = self.get('_session_expiry')
 
         if not expiry:   # Checks both None and 0 cases
-            return SESSION_COOKIE_AGE
+            return self.SESSION_COOKIE_AGE
         if not isinstance(expiry, datetime):
             return expiry
         delta = expiry - modification
@@ -339,7 +336,7 @@ class SessionBase(object):
         if isinstance(expiry, datetime):
             return expiry
         if not expiry:   # Checks both None and 0 cases
-            expiry = SESSION_COOKIE_AGE
+            expiry = self.SESSION_COOKIE_AGE
         return modification + timedelta(seconds=expiry)
 
     def set_expiry(self, value):
@@ -376,7 +373,7 @@ class SessionBase(object):
         date/age, if there is one.
         """
         if self.get('_session_expiry') is None:
-            return SESSION_EXPIRE_AT_BROWSER_CLOSE
+            return self.SESSION_EXPIRE_AT_BROWSER_CLOSE
         return self.get('_session_expiry') == 0
 
     def flush(self):

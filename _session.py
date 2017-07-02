@@ -1,66 +1,28 @@
-import abc
-import copy
-import pickle
 from uuid import uuid4
 
-
-class Driver(metaclass=abc.ABCMeta):
-
-    _client = None
-
-    def _create_client(self):
-        raise NotImplementedError('subclasses of Driver must provide a _create_client() method')
-
-    def _setup_client(self):
-        if self._client is None:
-            self._create_client()
-
-    def get(self, session_id):
-        self._setup_client()
-        raw_session = self._client.get(session_id)
-        return self._to_dict(raw_session)
-
-    def _to_dict(self, raw_session):
-        if raw_session is None:
-            return {}
-        else:
-            return pickle.loads(raw_session)
-
-    def _set_and_expire(self, session_id, pickled_session):
-        raise NotImplementedError('subclasses of Driver must provide a _set_and_expire() method')
-
-    def set(self, session_id, session):
-        pickled_session = pickle.dumps(session)
-        self._setup_client()
-        self._set_and_expire(session_id, pickled_session)
+from backends.driver import DriverFactory
 
 
-class RedisDriver(Driver):
-    EXPIRE_SECONDS = 2 * 60 * 60
-    DEFAULT_STORAGE_IDENTIFIERS = {
-        'db_sessions': 0,
-        'db_notifications': 1,
-    }
+class SessionManager:
+    """
+    This is the real class that manages sessions. All session objects are
+    persisted in a Redis or Memcache store (depending on your settings).
+    After 1 day without changing a session, it's purged from the datastore,
+    to avoid it to grow out-of-control.
 
-    def __init__(self, settings):
-        self.settings = settings
+    When a session is started, a cookie named 'PYCKET_ID' is set, containing the
+    encrypted session id of the user. By default, it's cleaned every time the
+    user closes the browser.
 
-    def _set_and_expire(self, session_id, pickled_session):
-        self.client.set(session_id, pickled_session, self.EXPIRE_SECONDS)
+    The recommendation is to use the manager instance that comes with the
+    SessionMixin (using the "session" property of the handler instance), but it
+    can be instantiated ad-hoc.
+    """
 
-    def _create_client(self):
-        import redis
-        if 'max_connections' in self.settings:
-            connection_pool = redis.ConnectionPool(**self.settings)
-            settings = copy.copy(self.settings)
-            del settings['max_connections']
-            settings['connection_pool'] = connection_pool
-        else:
-            settings = self.settings
-        self.client = redis.StrictRedis(**settings)
+    SESSION_ID_NAME = 'PYCKET_ID'
+    STORAGE_CATEGORY = 'db_sessions'
 
-
-class Session:
+    driver = None
 
     def __init__(self, handler):
         """
@@ -68,8 +30,23 @@ class Session:
         """
 
         self.handler = handler
-        self.settings = handler.settings['session']
-        self.engine = self.settings['engine']
+        self.settings = {}
+        self.__setup_driver()
+
+    def __setup_driver(self):
+        self.__setup_settings()
+        storage_settings = self.settings.get('storage', {})
+        factory = DriverFactory()
+        self.driver = factory.create(self.settings.get('engine'), storage_settings, self.STORAGE_CATEGORY)
+
+    def __setup_settings(self):
+        pycket_settings = self.handler.settings.get('pycket')
+        if not pycket_settings:
+            raise ConfigurationError('The "pycket" configurations are missing')
+        engine = pycket_settings.get('engine')
+        if not engine:
+            raise ConfigurationError('You must define an engine to be used with pycket')
+        self.settings = pycket_settings
 
     def set(self, name, value):
         """
