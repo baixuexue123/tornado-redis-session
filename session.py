@@ -1,66 +1,13 @@
-import abc
-import copy
+#!/usr/bin/env python3
 import pickle
 from uuid import uuid4
 
 
-class Driver(metaclass=abc.ABCMeta):
-
-    _client = None
-
-    def _create_client(self):
-        raise NotImplementedError('subclasses of Driver must provide a _create_client() method')
-
-    def _setup_client(self):
-        if self._client is None:
-            self._create_client()
-
-    def get(self, session_id):
-        self._setup_client()
-        raw_session = self._client.get(session_id)
-        return self._to_dict(raw_session)
-
-    def _to_dict(self, raw_session):
-        if raw_session is None:
-            return {}
-        else:
-            return pickle.loads(raw_session)
-
-    def _set_and_expire(self, session_id, pickled_session):
-        raise NotImplementedError('subclasses of Driver must provide a _set_and_expire() method')
-
-    def set(self, session_id, session):
-        pickled_session = pickle.dumps(session)
-        self._setup_client()
-        self._set_and_expire(session_id, pickled_session)
-
-
-class RedisDriver(Driver):
-    EXPIRE_SECONDS = 2 * 60 * 60
-    DEFAULT_STORAGE_IDENTIFIERS = {
-        'db_sessions': 0,
-        'db_notifications': 1,
-    }
-
-    def __init__(self, settings):
-        self.settings = settings
-
-    def _set_and_expire(self, session_id, pickled_session):
-        self.client.set(session_id, pickled_session, self.EXPIRE_SECONDS)
-
-    def _create_client(self):
-        import redis
-        if 'max_connections' in self.settings:
-            connection_pool = redis.ConnectionPool(**self.settings)
-            settings = copy.copy(self.settings)
-            del settings['max_connections']
-            settings['connection_pool'] = connection_pool
-        else:
-            settings = self.settings
-        self.client = redis.StrictRedis(**settings)
-
-
 class Session:
+
+    cache_key_prefix = 'session-'
+    session_id_name = '_sessionid'
+    expire_seconds = 60 * 60 * 2
 
     def __init__(self, handler):
         """
@@ -68,125 +15,107 @@ class Session:
         """
 
         self.handler = handler
-        self.settings = handler.settings['session']
-        self.engine = self.settings['engine']
+        self.settings = handler.settings
+        self.secret_key = handler.settings['cookie_secret']
+        session_settings = handler.settings['session']
+        self.backend = session_settings['backend']
+        self.expire_seconds = session_settings['expire_seconds']
+        self.session_id_name = session_settings['session_id_name']
 
-    def set(self, name, value):
-        """
-        Sets a value for "name". It may be any pickable (see "pickle" module
-        documentation) object.
-        """
+        self._session_id = self.handler.get_cookie(self.session_id_name)
+        self._session_cache = self.load()
+        self.modified = False
 
-        def change(session):
-            session[name] = value
-        self.__change_session(change)
+    @property
+    def cache_key(self):
+        return self.cache_key_prefix + self._get_or_create_session_id()
 
-    def get(self, name, default=None):
-        """
-        Gets the object for "name", or None if there's no such object. If
-        "default" is provided, return it if no object is found.
-        """
+    @property
+    def _session(self):
+        return self._session_cache
 
-        session = self.__get_session_from_db()
+    def _get_or_create_session_id(self):
+        if self._session_id is None:
+            self._session_id = self._get_new_session_id()
+        return self._session_id
 
-        return session.get(name, default)
-
-    def delete(self, *names):
-        """
-        Deletes the object with "name" from the session, if exists.
-        """
-
-        def change(session):
-            keys = session.keys()
-            names_in_common = [name for name in names if name in keys]
-            for name in names_in_common:
-                del session[name]
-        self.__change_session(change)
-    __delitem__ = delete
-
-    def keys(self):
-        session = self.__get_session_from_db()
-        return session.keys()
-
-    def iterkeys(self):
-        session = self.__get_session_from_db()
-        return iter(session)
-    __iter__ = iterkeys
-
-    def __getitem__(self, key):
-        value = self.get(key)
-        if value is None:
-            raise KeyError('%s not found in session' % key)
-        return value
-
-    def __setitem__(self, key, value):
-        self.set(key, value)
-
-    def __contains__(self, key):
-        session = self.__get_session_from_db()
-        return key in session
-
-    def __set_session_in_db(self, session):
-        session_id = self.__get_session_id()
-        self.driver.set(session_id, session)
-
-    def __get_session_from_db(self):
-        session_id = self.__get_session_id()
-        return self.driver.get(session_id)
-
-    def __get_session_id(self):
-        session_id = self.handler.get_secure_cookie(self.SESSION_ID_NAME)
-        if session_id is None:
-            session_id = self.__create_session_id()
-        return session_id
-
-    def __create_session_id(self):
+    def _get_new_session_id(self):
         session_id = str(uuid4())
-        self.handler.set_secure_cookie(self.SESSION_ID_NAME, session_id,
-                                       **self.__cookie_settings())
+        self.handler.set_cookie(self.session_id_name, session_id,
+                                **self._cookie_settings())
         return session_id
 
-    def __change_session(self, callback):
-        session = self.__get_session_from_db()
-
-        callback(session)
-        self.__set_session_in_db(session)
-
-    def __cookie_settings(self):
+    def _cookie_settings(self):
         cookie_settings = self.settings.get('cookies', {})
         cookie_settings.setdefault('expires', None)
         cookie_settings.setdefault('expires_days', None)
         return cookie_settings
 
+    def load(self):
+        session_data = self.backend.get(self.cache_key)
+        if session_data is not None:
+            return pickle.loads(session_data)
+        return {}
 
-class SessionMixin:
-    """
-    This mixin must be included in the request handler inheritance list, so that
-    the handler can support sessions.
+    def save(self):
+        if self.modified:
+            session_data = pickle.dumps(self._session)
+            self.backend.set(self.cache_key, session_data, self.expire_seconds)
 
-    Example:
-    >>> class MyHandler(tornado.web.RequestHandler, SessionMixin):
-    ...    def get(self):
-    ...        print type(self.session) # SessionManager
+    def update(self, dict_):
+        self._session.update(dict_)
+        self.modified = True
 
-    Refer to SessionManager documentation in order to know which methods are
-    available.
-    """
+    def __contains__(self, key):
+        return key in self._session
 
-    @property
-    def session(self):
+    def __getitem__(self, key):
+        return self._session[key]
+
+    def __setitem__(self, key, value):
+        self._session[key] = value
+        self.modified = True
+
+    def __delitem__(self, key):
+        del self._session[key]
+        self.modified = True
+
+    def get(self, key, default=None):
+        return self._session.get(key, default)
+
+    def pop(self, key, default=None):
+        return self._session.pop(key, default)
+
+    def has_key(self, key):
+        return key in self._session
+
+    def keys(self):
+        return self._session.keys()
+
+    def values(self):
+        return self._session.values()
+
+    def items(self):
+        return self._session.items()
+
+    def iteritems(self):
+        return self._session.iteritems()
+
+    def clear(self):
+        self._session_cache = {}
+        self.modified = True
+
+    def delete(self):
+        self.backend.delete(self.cache_key)
+
+    def flush(self):
         """
-        Returns a SessionManager instance
+        Removes the current session data from the database and regenerates the key
         """
+        self.clear()
+        self.delete()
+        self._session_id = None
+        self.handler.clear_cookie(self.session_id_name)
 
-        return create_mixin(self, '__session_manager', SessionManager)
-
-
-class ConfigurationError(Exception):
-    pass
-
-
-def create_mixin(context, manager_property, manager_class):
-    if not hasattr(context, manager_property):
-        setattr(context, manager_property, manager_class(context))
-    return getattr(context, manager_property)
+    def set_expiry(self, value=expire_seconds):
+        self.backend.expire(self.cache_key, value)
