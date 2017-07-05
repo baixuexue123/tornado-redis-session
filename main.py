@@ -24,6 +24,9 @@ executor = concurrent.futures.ThreadPoolExecutor(2)
 
 
 class Session:
+    cache_key_prefix = 'session'
+    expire_seconds = 60 * 60 * 2
+    session_id_name = '_sessionid'
 
     def __init__(self, handler):
         """
@@ -35,7 +38,6 @@ class Session:
         self.secret_key = handler.settings['cookie_secret']
         session_settings = handler.settings['session']
         self.engine = session_settings['engine']
-        self.cache_key_prefix = session_settings['cache_key_prefix']
         self.expire_seconds = session_settings['expire_seconds']
         self.session_id_name = session_settings['session_id_name']
 
