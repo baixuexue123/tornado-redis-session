@@ -3,8 +3,6 @@
   <head>
     <meta charset="UTF-8">
     <title>{{ escape(handler.settings["blog_title"]) }}</title>
-    <link rel="stylesheet" href="{{ static_url("blog.css") }}" type="text/css">
-    <link rel="alternate" href="/feed" type="application/atom+xml" title="{{ escape(handler.settings["blog_title"]) }}">
     {% block head %}{% end %}
   </head>
   <body>
