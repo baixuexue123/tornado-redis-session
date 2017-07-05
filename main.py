@@ -28,6 +28,10 @@ class Session:
     expire_seconds = 60 * 60 * 2
     session_id_name = '_sessionid'
 
+    cache_key_prefix = 'session-'
+    session_id_name = '_sessionid'
+    expire_seconds = 60 * 60 * 2
+
     def __init__(self, handler):
         """
         Expects a tornado.web.RequestHandler
@@ -41,101 +45,207 @@ class Session:
         self.expire_seconds = session_settings['expire_seconds']
         self.session_id_name = session_settings['session_id_name']
 
-    def set(self, name, value):
-        """
-        Sets a value for "name". It may be any pickable (see "pickle" module
-        documentation) object.
-        """
+        self._session_id = None
+        self.accessed = False
+        self.modified = False
 
-        def change(session):
-            session[name] = value
-        self.__change_session(change)
+    @property
+    def cache_key(self):
+        return self.cache_key_prefix + self._get_or_create_session_id()
 
-    def get(self, name, default=None):
-        """
-        Gets the object for "name", or None if there's no such object. If
-        "default" is provided, return it if no object is found.
-        """
+    def _get_or_create_session_id(self):
+        if self._session_id is None:
+            self._session_id = self._get_new_session_id()
+        return self._session_id
 
-        session = self.__get_session_from_db()
-        return session.get(name, default)
-
-    def delete(self, *names):
-        """
-        Deletes the object with "name" from the session, if exists.
-        """
-
-        def change(session):
-            keys = session.keys()
-            names_in_common = [name for name in names if name in keys]
-            for name in names_in_common:
-                del session[name]
-        self.__change_session(change)
-    __delitem__ = delete
-
-    def clear(self):
-        session_id = self.__get_session_id()
-        self.engine.delete(session_id)
-        self.handler.clear_cookie(self.session_id_name)
-
-    def keys(self):
-        session = self.__get_session_from_db()
-        return session.keys()
-
-    def iterkeys(self):
-        session = self.__get_session_from_db()
-        return iter(session)
-    __iter__ = iterkeys
-
-    def __getitem__(self, key):
-        value = self.get(key)
-        if value is None:
-            raise KeyError('%s not found in session' % key)
-        return value
-
-    def __setitem__(self, key, value):
-        self.set(key, value)
-
-    def __contains__(self, key):
-        session = self.__get_session_from_db()
-        return key in session
-
-    def __set_session_in_db(self, session_data):
-        session_id = self.__get_session_id()
-        pickled_session = pickle.dumps(session_data)
-        self.engine.set(session_id, pickled_session, self.expire_seconds)
-
-    def __get_session_from_db(self):
-        session_id = self.__get_session_id()
-        session_data = self.engine.get(session_id)
-        if session_data is None:
-            return {}
-        else:
-            return pickle.loads(session_data)
-
-    def __get_session_id(self):
-        session_id = self.handler.get_secure_cookie(self.session_id_name)
-        if session_id is None:
-            session_id = self.__create_session_id()
-        return session_id
-
-    def __create_session_id(self):
+    def _get_new_session_id(self):
         session_id = str(uuid4())
         self.handler.set_secure_cookie(self.session_id_name, session_id,
-                                       **self.__cookie_settings())
+                                       **self._cookie_settings())
         return session_id
 
-    def __change_session(self, callback):
-        session = self.__get_session_from_db()
-
-        callback(session)
-        self.__set_session_in_db(session)
-
-    def __cookie_settings(self):
+    def _cookie_settings(self):
         cookie_settings = self.settings.get('cookies', {})
         cookie_settings.setdefault('expires', None)
         cookie_settings.setdefault('expires_days', None)
         return cookie_settings
+
+    def _get_session(self, no_load=False):
+        """
+        Lazily loads session from storage (unless "no_load" is True, when only
+        an empty dict is stored) and stores it in the current instance.
+        """
+        self.accessed = True
+        try:
+            return self._session_cache
+        except AttributeError:
+            if self._session_id is None or no_load:
+                self._session_cache = {}
+            else:
+                self._session_cache = self.load()
+        return self._session_cache
+
+    _session = property(_get_session)
+
+    def load(self):
+        session_data = self.engine.get(self.cache_key)
+        if session_data is not None:
+            return pickle.loads(session_data)
+        return {}
+
+    def save(self):
+        session_data = pickle.dumps(self._session)
+        self.engine.set(self.cache_key, session_data, self.expire_seconds)
+
+    def update(self, dict_):
+        self._session.update(dict_)
+        self.modified = True
+
+    def __contains__(self, key):
+        return key in self._session
+
+    def __getitem__(self, key):
+        return self._session[key]
+
+    def __setitem__(self, key, value):
+        self._session[key] = value
+        self.modified = True
+
+    def __delitem__(self, key):
+        del self._session[key]
+        self.modified = True
+
+    def get(self, key, default=None):
+        return self._session.get(key, default)
+
+    def pop(self, key, default=None):
+        return self._session.pop(key, default)
+
+    def has_key(self, key):
+        return key in self._session
+
+    def keys(self):
+        return self._session.keys()
+
+    def values(self):
+        return self._session.values()
+
+    def items(self):
+        return self._session.items()
+
+    def iterkeys(self):
+        return self._session.iterkeys()
+
+    def itervalues(self):
+        return self._session.itervalues()
+
+    def iteritems(self):
+        return self._session.iteritems()
+
+    def clear(self):
+        self._session_cache = {}
+        self.accessed = True
+        self.modified = True
+
+
+
+
+
+    # def set(self, name, value):
+    #     """
+    #     Sets a value for "name". It may be any pickable (see "pickle" module
+    #     documentation) object.
+    #     """
+    #
+    #     def change(session):
+    #         session[name] = value
+    #     self.__change_session(change)
+    #
+    # def get(self, name, default=None):
+    #     """
+    #     Gets the object for "name", or None if there's no such object. If
+    #     "default" is provided, return it if no object is found.
+    #     """
+    #
+    #     session = self.__get_session_from_db()
+    #     return session.get(name, default)
+    #
+    # def delete(self, *names):
+    #     """
+    #     Deletes the object with "name" from the session, if exists.
+    #     """
+    #
+    #     def change(session):
+    #         keys = session.keys()
+    #         names_in_common = [name for name in names if name in keys]
+    #         for name in names_in_common:
+    #             del session[name]
+    #     self.__change_session(change)
+    # __delitem__ = delete
+    #
+    # def clear(self):
+    #     session_id = self.__get_session_id()
+    #     self.engine.delete(session_id)
+    #     self.handler.clear_cookie(self.session_id_name)
+    #
+    # def keys(self):
+    #     session = self.__get_session_from_db()
+    #     return session.keys()
+    #
+    # def iterkeys(self):
+    #     session = self.__get_session_from_db()
+    #     return iter(session)
+    # __iter__ = iterkeys
+    #
+    # def __getitem__(self, key):
+    #     value = self.get(key)
+    #     if value is None:
+    #         raise KeyError('%s not found in session' % key)
+    #     return value
+    #
+    # def __setitem__(self, key, value):
+    #     self.set(key, value)
+    #
+    # def __contains__(self, key):
+    #     session = self.__get_session_from_db()
+    #     return key in session
+    #
+    # def __set_session_in_db(self, session_data):
+    #     session_id = self.__get_session_id()
+    #     pickled_session = pickle.dumps(session_data)
+    #     self.engine.set(session_id, pickled_session, self.expire_seconds)
+    #
+    # def __get_session_from_db(self):
+    #     session_id = self.__get_session_id()
+    #     session_data = self.engine.get(session_id)
+    #     if session_data is None:
+    #         return {}
+    #     else:
+    #         return pickle.loads(session_data)
+    #
+    # def __get_session_id(self):
+    #     session_id = self.handler.get_secure_cookie(self.session_id_name)
+    #     if session_id is None:
+    #         session_id = self.__create_session_id()
+    #     return session_id
+    #
+    # def __create_session_id(self):
+    #     session_id = str(uuid4())
+    #     self.handler.set_secure_cookie(self.session_id_name, session_id,
+    #                                    **self.__cookie_settings())
+    #     return session_id
+    #
+    # def __change_session(self, callback):
+    #     session = self.__get_session_from_db()
+    #
+    #     callback(session)
+    #     self.__set_session_in_db(session)
+    #
+    # def __cookie_settings(self):
+    #     cookie_settings = self.settings.get('cookies', {})
+    #     cookie_settings.setdefault('expires', None)
+    #     cookie_settings.setdefault('expires_days', None)
+    #     return cookie_settings
 
 
 class Application(tornado.web.Application):
@@ -165,7 +275,6 @@ class Application(tornado.web.Application):
         settings['session'] = dict(
             session_id_name='_sessionid',
             expire_seconds=60 * 60 * 1,
-            cache_key_prefix='session-',
             engine=redis.StrictRedis(host='127.0.0.1', port=6379, db=0),
         )
         super(Application, self).__init__(handlers, **settings)
@@ -227,7 +336,6 @@ class AuthCreateHandler(BaseHandler):
             "VALUES (%s, %s, %s)",
             self.get_argument("email"), self.get_argument("name"),
             hashed_password)
-        self.set_secure_cookie("blogdemo_user", str(author_id))
         self.redirect(self.get_argument("next", "/"))
 
 
