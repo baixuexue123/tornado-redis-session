@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-#
-# Copyright 2009 Facebook
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may
-# not use this file except in compliance with the License. You may obtain
-# a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-# License for the specific language governing permissions and limitations
-# under the License.
-
-import copy
 import logging
 import time
 
@@ -48,15 +31,15 @@ class Connection:
     PyMySQL version >= 0.7.11 and MySQL version > 5.1.12.
     """
     def __init__(self, host, database, user=None, password=None,
-                 max_idle_time=7 * 3600, connect_timeout=0,
+                 max_idle_time=7 * 3600, connect_timeout=3,
                  time_zone="+0:00", charset="utf8", sql_mode="TRADITIONAL",
                  **kwargs):
         self.host = host
         self.database = database
         self.max_idle_time = float(max_idle_time)
 
-        args = dict(conv=CONVERSIONS, use_unicode=True, charset=charset,
-                    db=database, init_command=('SET time_zone = "%s"' % time_zone),
+        args = dict(charset=charset, db=database,
+                    init_command=('SET time_zone = "%s"' % time_zone),
                     connect_timeout=connect_timeout, sql_mode=sql_mode, **kwargs)
         if user is not None:
             args["user"] = user
@@ -214,7 +197,7 @@ class Connection:
     def _execute(self, cursor, query, parameters, kwparameters):
         try:
             return cursor.execute(query, kwparameters or parameters)
-        except OperationalError:
+        except pymysql.OperationalError:
             logging.error("Error connecting to MySQL on %s", self.host)
             self.close()
             raise
@@ -227,21 +210,3 @@ class Row(dict):
             return self[name]
         except KeyError:
             raise AttributeError(name)
-
-
-# Fix the access conversions to properly recognize unicode/binary
-from pymysql.constants import FIELD_TYPE
-from pymysql.constants import FLAG
-
-CONVERSIONS = copy.copy(pymysql.converters.conversions)
-
-field_types = [FIELD_TYPE.BLOB, FIELD_TYPE.STRING, FIELD_TYPE.VAR_STRING]
-if 'VARCHAR' in vars(FIELD_TYPE):
-    field_types.append(FIELD_TYPE.VARCHAR)
-
-for field_type in field_types:
-    CONVERSIONS[field_type] = [(FLAG.BINARY, str)] + CONVERSIONS[field_type]
-
-# Alias some common MySQL exceptions
-IntegrityError = pymysql.IntegrityError
-OperationalError = pymysql.OperationalError
