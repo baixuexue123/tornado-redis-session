@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import logging
 import time
 
@@ -32,7 +31,7 @@ class Connection:
     PyMySQL version >= 0.7.11 and MySQL version > 5.1.12.
     """
     def __init__(self, host, database, user=None, password=None,
-                 max_idle_time=7 * 3600, connect_timeout=0,
+                 max_idle_time=7 * 3600, connect_timeout=3,
                  time_zone="+0:00", charset="utf8", sql_mode="TRADITIONAL",
                  **kwargs):
         self.host = host
